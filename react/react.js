@@ -7,8 +7,20 @@ let wipFiber = null;
 let hookIndex = null;
 const isProps = key => key !== 'children';
 const isEvent = key => key.startsWith('on');
+function getComponentType (type) {
+  const isFunction = type instanceof Function;
+  const isClass = isFunction && type.prototype.isReactComponent;
+  if (isClass) {
+    return 'classComponent';
+  } else if (isFunction) {
+    return 'funcComponent';
+  } else {
+    return 'hostComponent';
+  }
+}
 function createElement (type, props, ...children) {
   return {
+    $$typeof: getComponentType(type),
     type,
     props: {
       ...props,
@@ -18,6 +30,7 @@ function createElement (type, props, ...children) {
 }
 function createTextElement (text) {
   return {
+    $$typeof: 'hostComponent',
     type: 'TEXT_ELEMENT',
     props: {
       nodeValue: text,
@@ -61,9 +74,16 @@ function renderWork (dl) {
     commitRoot();
   }
 }
+
 function performUnitOfWork (fiber) {
-  const isFunction = fiber.type instanceof Function;
-  isFunction ? updateFunctionComponent(fiber) : updateHostComponent(fiber);
+  const type = fiber.$$typeof;
+  if (type === 'classComponent') {
+    updateClassComponent(fiber);
+  } else if (type === 'funcComponent') {
+    updateFunctionComponent(fiber);
+  } else {
+    updateHostComponent(fiber);
+  }
   //返回下一个处理单元
   if (fiber.child) {
     return fiber.child;
@@ -75,6 +95,22 @@ function performUnitOfWork (fiber) {
     }
     nextFiber = nextFiber.return;
   }
+}
+function updateClassComponent (fiber) {
+  //处理state
+  if (fiber.alternate && fiber.alternate.entity) {
+    fiber.entity = fiber.alternate.entity;
+    const stateQueue = fiber.entity.stateQueue;
+    stateQueue.forEach(state => {
+      //合并state
+      fiber.entity.state = { ...fiber.entity.state, ...state };
+    });
+    fiber.entity.stateQueue = [];
+  } else {
+    fiber.entity = new fiber.type(fiber.props);
+  }
+  const elements = [fiber.entity.render()];
+  reconcileChildren(fiber, elements);
 }
 function updateFunctionComponent (fiber) {
   wipFiber = fiber;
@@ -105,6 +141,7 @@ function reconcileChildren (fiber, elements) {
     if (sameType) {
       //新旧节点同时存在并且type相同 需要更新
       newFiber = {
+        $$typeof: element.$$typeof,
         type: oldFiber.type,
         props: element.props,
         dom: oldFiber.dom,
@@ -116,6 +153,7 @@ function reconcileChildren (fiber, elements) {
     if (element && !sameType) {
       //新节点存在 并且与旧节点type不相同 需要新增
       newFiber = {
+        $$typeof: element.$$typeof,
         type: element.type,
         props: element.props,
         dom: null,
@@ -145,6 +183,7 @@ function reconcileChildren (fiber, elements) {
   }
 }
 function commitRoot () {
+  console.log(fiberRoot);
   deletions.forEach(commitWork);
   commitWork(fiberRoot.child);
   currentRoot = fiberRoot;
@@ -225,9 +264,31 @@ export function useState (initial) {
   hookIndex++;
   return [hook.state, setState];
 }
+export function Component () {
+  this.stateQueue = [];
+}
+Component.prototype = {
+  isReactComponent: true,
+  setState (state) {
+    this.stateQueue.push(state);
+    if (!fiberRoot) {
+      fiberRoot = {
+        //初始化Rootfiber
+        dom: currentRoot.dom,
+        props: currentRoot.props,
+        alternate: currentRoot
+      };
+      deletions = [];
+      nextUnitOfWork = fiberRoot;
+      requestIdleCallback(renderWork);
+    }
+  }
+};
+
 export function useEffect (fn, dependencies) {}
 const React = {
   createElement,
-  render
+  render,
+  Component
 };
 export default React;
